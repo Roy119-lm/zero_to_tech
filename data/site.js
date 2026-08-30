@@ -21,6 +21,6 @@ export const home = {
 };
 
 export const textLab = {
-  heroTitle: "D文字实验室",
+  heroTitle: "文字实验室",
   heroSubtitle: "拼音和情绪，挖掘中文里的细节",
 };
