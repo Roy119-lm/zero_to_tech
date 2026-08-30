@@ -1,0 +1,75 @@
+version: "3.8"
+
+services:
+  # --- 元数据层：锁定在 Master 节点 ---
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: iceberg_catalog
+      POSTGRES_USER: ${DB_USER:-iceberg_user}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-iceberg_password}
+    volumes:
+      - /mnt/data/postgres:/var/lib/postgresql/data # 建议挂载到宿主机固定路径
+    networks:
+      - iceberg-net
+    deploy:
+      placement:
+        constraints:
+          - node.role == manager # 关键：强制只在主节点运行
+
+  # --- 对象存储层：分布式 MinIO (示例为 4 节点集群) ---
+  # 生产环境建议每台机器运行一个 MinIO 实例
+  minio:
+    image: minio/minio
+    hostname: "minio-{{.Task.Slot}}"
+    command: server http://minio-{{.Task.Slot}}/data{1...4} --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY}
+    networks:
+      - iceberg-net
+    deploy:
+      replicas: 4 # 扩展到 4 个节点
+      update_config:
+        parallelism: 1
+      placement:
+        max_replicas_per_node: 1 # 每台物理机只运行一个 MinIO 实例
+
+  # --- 计算层：Spark Master ---
+  spark-master:
+    image: yaqia/spark-iceberg-minio:latest
+    ports:
+      - "8080:8080"
+      - "7077:7077"
+    environment:
+      - SPARK_MODE=master
+    networks:
+      - iceberg-net
+    deploy:
+      placement:
+        constraints:
+          - node.role == manager
+
+  # --- 计算层：Spark Worker (可自由伸缩) ---
+  spark-worker:
+    image: yaqia/spark-iceberg-minio:latest
+    environment:
+      - SPARK_MODE=worker
+      - SPARK_MASTER_URL=spark://spark-master:7077
+      - SPARK_WORKER_CORES=4
+      - SPARK_WORKER_MEMORY=4g
+    networks:
+      - iceberg-net
+    deploy:
+      replicas: 5 # 动态扩展 5 个计算节点
+      resources:
+        limits:
+          cpus: '4'
+          memory: 4G
+
+networks:
+  iceberg-net:
+    driver: overlay # 必须使用 overlay 网络实现跨主机通信
+
+volumes:
+  postgres_data:
